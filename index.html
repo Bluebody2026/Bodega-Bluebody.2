@@ -7,19 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--blue-dark);min-height:100vh;position:relative;}
-body::before{
-  content:"";
-  position:fixed;
-  top:0; right:0; bottom:0;
-  left:var(--sidebar);
-  z-index:0;
-  background:linear-gradient(180deg,rgba(0,11,61,.55),rgba(0,22,116,.62)),var(--bg-photo) center/auto no-repeat;
-  background-color:var(--blue-dark);
-}
-@media(max-width:768px){
-  body::before{ left:0; }
-}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--blue-dark);min-height:100vh;}
 .app{position:relative;z-index:1;}
 :root{
   --blue:#001674;--blue-dark:#000B3D;--blue-light:#E8EBF7;--blue-mid:#1B3FA8;
@@ -73,7 +61,7 @@ body::before{
 .topbar-title{font-size:15px;font-weight:700;color:white;}
 .btn-excel{display:flex;align-items:center;gap:6px;padding:7px 14px;background:var(--green);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;}
 .btn-excel:hover{opacity:.88;}
-.page{padding:22px;flex:1;}
+.page{padding:22px;flex:1;position:relative;background:linear-gradient(180deg,rgba(0,11,61,.55),rgba(0,22,116,.62)),var(--bg-photo) center/auto no-repeat;background-color:var(--blue-dark);}
 .section{display:none;}
 .section.active{display:block;animation:fadeIn .2s ease;}
 
@@ -198,7 +186,7 @@ input:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(30,7
 .mob-panel{background:var(--blue-dark);width:260px;height:100%;padding:16px 0;overflow-y:auto;position:relative;z-index:1;}
 
 @media(max-width:768px){
-  .sidebar{display:none;}.main{margin-left:0;}.topbar{display:none;}.page{padding:14px;}
+  .sidebar{display:none;}.main{margin-left:0;}.topbar{display:none;}.page{padding:14px;background-size:cover;}
   .mobile-header{display:flex;}.metrics{grid-template-columns:1fr 1fr;}
   .cat-grid{grid-template-columns:1fr;}.form-grid{grid-template-columns:1fr;}
   .add-row{flex-direction:column;}.add-row .form-group{width:100%;min-width:unset;}
@@ -762,7 +750,7 @@ window.registrarSalida=async function(){
   try{
     await update(ref(db,`v2/equipos/${itemId}`),{enUso:eq.enUso+qty});
     const cat=cats[eq.catId]; const area=areas[areaId];
-    await push(ref(db,'v2/log'),{tipo:'salida',itemId,itemNombre:eq.nombre,catNombre:cat?.nombre||'',qty,guardia,extra:turno,areaNombre:area?.nombre||'',obs,fecha:now(),ts:Date.now()});
+    await push(ref(db,'v2/log'),{tipo:'salida',itemId,itemNombre:eq.nombre,catNombre:cat?.nombre||'',qty,guardia,extra:turno,areaId,areaNombre:area?.nombre||'',obs,fecha:now(),ts:Date.now()});
     showToast('✓ Salida registrada.');
     ['s-item','s-guardia','s-obs'].forEach(id=>document.getElementById(id).value='');
     document.getElementById('s-qty').value=1;
@@ -789,7 +777,7 @@ window.registrarEntrada=async function(){
     if(esBaja) eqUpdates.total = Math.max(0,eq.total-qty);
     await update(ref(db,`v2/equipos/${itemId}`),eqUpdates);
     const cat=cats[eq.catId]; const area=areas[areaId];
-    await push(ref(db,'v2/log'),{tipo:esBaja?'baja':'entrada',itemId,itemNombre:eq.nombre,catNombre:cat?.nombre||'',qty,guardia,extra:estado,areaNombre:area?.nombre||'',obs,fecha:now(),ts:Date.now()});
+    await push(ref(db,'v2/log'),{tipo:esBaja?'baja':'entrada',itemId,itemNombre:eq.nombre,catNombre:cat?.nombre||'',qty,guardia,extra:estado,areaId,areaNombre:area?.nombre||'',obs,fecha:now(),ts:Date.now()});
     showToast(esBaja?'✓ Baja registrada. El equipo salió del inventario.':'✓ Entrada registrada.');
     ['e-item','e-guardia','e-obs','e-area'].forEach(id=>document.getElementById(id).value='');
     document.getElementById('e-qty').value=1;
@@ -991,7 +979,24 @@ window.editArea=function(k){
 window.saveArea=async function(k){
   const nombre=document.getElementById('an-'+k).value.trim();
   if(!nombre) return showToast('El nombre no puede estar vacío.','err');
-  await update(ref(db,`v2/areas/${k}`),{nombre}); showToast('✓ Área actualizada.');
+  const anterior=areas[k]?.nombre;
+  const updates={};
+  updates[`v2/areas/${k}/nombre`]=nombre;
+
+  // Corregir el historial ya registrado: los movimientos guardados con el nombre anterior
+  // (o con este mismo areaId) deben reflejar el nombre nuevo, para que "Por área" y el
+  // Historial se actualicen de inmediato en vez de quedarse con el nombre viejo.
+  if(anterior && anterior!==nombre){
+    Object.entries(logData).forEach(([logKey,r])=>{
+      if(r.areaId===k || (!r.areaId && r.areaNombre===anterior)){
+        updates[`v2/log/${logKey}/areaNombre`]=nombre;
+        updates[`v2/log/${logKey}/areaId`]=k;
+      }
+    });
+  }
+
+  await update(ref(db),updates);
+  showToast('✓ Área actualizada. El historial también se corrigió.');
 };
 
 window.agregarArea=async function(){
@@ -1008,7 +1013,7 @@ window.delArea=async function(k){
   // Calcular cuánto equipo sigue "en uso" en esta área, por artículo (salidas - entradas ya registradas con esta área)
   const net={};
   Object.values(logData).forEach(r=>{
-    if(r.areaNombre!==area?.nombre) return;
+    if(r.areaId!==k && !(!r.areaId && r.areaNombre===area?.nombre)) return;
     if(r.tipo==='salida') net[r.itemId]=(net[r.itemId]||0)+r.qty;
     else if(r.tipo==='entrada'||r.tipo==='baja') net[r.itemId]=(net[r.itemId]||0)-r.qty;
   });
@@ -1022,7 +1027,7 @@ window.delArea=async function(k){
     if(devolver<=0) return;
     updates[`v2/equipos/${itemId}/enUso`]=Math.max(0,eq.enUso-devolver);
     const logKey=push(ref(db,'v2/log')).key;
-    updates[`v2/log/${logKey}`]={tipo:'entrada',itemId,itemNombre:eq.nombre,catNombre:cats[eq.catId]?.nombre||'',qty:devolver,guardia:'Sistema',extra:'Devolución automática',areaNombre:area?.nombre||'',obs:`Devuelto automáticamente al eliminar el área "${area?.nombre}"`,fecha:fechaMov,ts:tsMov};
+    updates[`v2/log/${logKey}`]={tipo:'entrada',itemId,itemNombre:eq.nombre,catNombre:cats[eq.catId]?.nombre||'',qty:devolver,guardia:'Sistema',extra:'Devolución automática',areaId:k,areaNombre:area?.nombre||'',obs:`Devuelto automáticamente al eliminar el área "${area?.nombre}"`,fecha:fechaMov,ts:tsMov};
   });
   updates[`v2/areas/${k}`]=null;
 
@@ -1044,13 +1049,15 @@ window.renderPorArea=function(){
   const net={};
   Object.values(logData).forEach(r=>{
     if(r.tipo==='compra') return;
-    // For salidas: area is stored as areaNombre, match against areas
     const areaName=r.areaNombre||'';
-    if(!areaName) return;
-    // Find area key by name
-    const areaEntry=Object.entries(areas).find(([k,a])=>a.nombre===areaName);
+    if(!areaName && !r.areaId) return;
+    // Preferir la referencia real (areaId) guardada en el movimiento; si no existe
+    // (movimientos antiguos), intentar encontrarla por nombre como respaldo.
+    const areaEntry=r.areaId && areas[r.areaId]
+      ? [r.areaId, areas[r.areaId]]
+      : Object.entries(areas).find(([k,a])=>a.nombre===areaName);
     const areaId=areaEntry?areaEntry[0]:('__'+areaName);
-    const areaLabel=areaName;
+    const areaLabel=areaEntry?areaEntry[1].nombre:areaName;
     if(!net[areaId]) net[areaId]={label:areaLabel,items:{}};
     const qty=r.tipo==='salida'?r.qty:-r.qty;
     net[areaId].items[r.itemNombre]=(net[areaId].items[r.itemNombre]||0)+qty;
